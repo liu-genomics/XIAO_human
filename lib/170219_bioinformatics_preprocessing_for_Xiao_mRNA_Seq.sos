@@ -1,0 +1,67 @@
+#!/usr/bin/env sos-runner
+#fileformat=sos 0.8.4.1
+
+# this script is used to process the mRNA-Seq data from Xiao
+
+
+
+from glob import glob
+from subprocess import check_output
+
+parameter: data_folder = '../data/' # where the raw .gz files are in the system
+parameter: file_name = str # The name of a file that will be processed
+parameter: output_folder = str # The name of output folder
+parameter: gtf_file = '../other_annotations/genecode_gtf_annotation/gencode.vM1.annotation.gtf'
+parameter: gtf_index_folder = '../other_annotations/genecode_gtf_annotation/' # choose a gtf index folder
+parameter: bowtie_index = '../other_annotations/bowtie2_indexed_genome/mm9' # a string that will append to the output files to indicate what genomic references are used.
+parameter: cpu_number = 4 # a number indicates how many cpus will be used for tophat mapping.
+parameter: max_multihits = 1 # the maximal multihits number allowed for a read
+
+
+[gunzip: shared = {"gunzip_output": "output"}]
+## gunzip the raw sequencing file with a filename file_name
+
+raw_file = data_folder + file_name
+
+input: raw_file, pattern = "{name}.fastq.gz"
+output: ["${_name}.fastq"]
+run: 
+gunzip -c ${_input} > ${_name}.fastq
+
+[lqr_removal]
+## remove low quality reads, using phred33
+input: pattern = "{name}.fastq"
+output: ["${_name}_lqr_removal.fastq"]
+run:
+fastq_quality_filter -Q33 -q 20 -p 90 -i ${_input} -o ${_output}
+
+[mapping]
+## map to known transcripts from genecode gtf based on mm9
+## mapping is only on known junctions, on transcriptome only, 
+output_folder_path = data_folder + output_folder
+input: pattern = "{name}_lqr_removal.fastq"
+output: ["${output_folder_path}/accepted_hits.bam"]
+run:
+tophat -o ${output_folder_path} -p ${cpu_number} -G ${gtf_file} --transcriptome-index=${gtf_index_folder} --no-novel-juncs --transcriptome-only --max-multihits ${max_multihits} ${bowtie_index} ${_input}
+samtools flagstat ${_output} > ${_output}.flagstat
+
+[htseq_count]
+# use htseq-count to count the number of reads in each gene
+output_folder_path = data_folder + output_folder
+input: pattern = "{name}/accepted_hits.bam"
+output: ["${_name}/htseq.count"]
+run:
+samtools view -o ${output_folder_path}/accepted_hits.sam ${_input}
+htseq-count -m union -s reverse -a 10 -t exon -i gene_name \
+${output_folder_path}/accepted_hits.sam ../other_annotations/genecode_gtf_annotation/gencode.vM1.annotation.gff > ${_output}
+
+
+[htseq_count_protein_coding]
+# use htseq-count to count the number of reads in each gene, only use protein coding genes. 
+output_folder_path = data_folder + output_folder
+input: pattern = "{name}/accepted_hits.bam"
+output: ["${_name}/htseq_protein_coding.count"]
+run:
+samtools view -o ${output_folder_path}/accepted_hits.sam ${_input}
+htseq-count -m union -s reverse -a 10 -t exon -i gene_name \
+${output_folder_path}/accepted_hits.sam ../other_annotations/genecode_gtf_annotation/gencode.vM1.annotation.protein_coding.gff > ${_output}
